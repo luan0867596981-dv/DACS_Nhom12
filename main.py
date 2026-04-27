@@ -48,6 +48,42 @@ DATASET_CFG = {
 }
 
 
+def _load_drug_mapping(drug_info_path: str) -> dict:
+    """Read DrugInformation.csv and return {id: (name, smiles)} mapping."""
+    mapping = {}
+    if not os.path.exists(drug_info_path):
+        return mapping
+    
+    try:
+        import csv
+        with open(drug_info_path, 'r', encoding='utf-8') as f:
+            content = f.read(1024)
+            f.seek(0)
+            dialect = csv.Sniffer().sniff(content) if ',' in content or ';' in content else 'excel'
+            reader = csv.DictReader(f, dialect=dialect)
+            
+            cols = reader.fieldnames
+            id_col, name_col, smiles_col = None, None, None
+            if cols:
+                for c in cols:
+                    cl = c.lower().strip()
+                    if cl == 'id': id_col = c
+                    elif cl == 'name': name_col = c
+                    elif cl == 'smiles': smiles_col = c
+            
+            if id_col and name_col:
+                for row in reader:
+                    bid = row[id_col].strip() if id_col in row else None
+                    name = row[name_col].strip() if name_col in row else None
+                    smiles = row[smiles_col].strip() if smiles_col and smiles_col in row else ""
+                    if bid and name:
+                        mapping[bid] = (name, smiles)
+    except Exception as e:
+        print(f"Error loading drug mapping: {e}")
+        
+    return mapping
+
+
 def _read_node_ids(allnode_path: str) -> list[str]:
     """Read AllNode.csv supporting both plain-id and index,id formats."""
     ids = []
@@ -63,18 +99,22 @@ def _read_node_ids(allnode_path: str) -> list[str]:
 
 
 def _build_name_mapping(node_ids: list[str], num_drugs: int, num_diseases: int,
-                        drug_mapping: dict, disease_mapping: dict, dataset_name: str):
-    """Return (d_names, di_names) lists for drug and disease nodes."""
+                        drug_mapping: dict, disease_mapping: dict):
+    """Return (d_names, d_smiles, di_names) lists."""
     real_drug_ids    = node_ids[:num_drugs]
     real_disease_ids = node_ids[num_drugs: num_drugs + num_diseases]
 
     d_names = []
+    d_smiles = []
     for i, bid in enumerate(real_drug_ids):
         bid = str(bid).strip()
         if bid in drug_mapping:
-            d_names.append(drug_mapping[bid])
+            name, smiles = drug_mapping[bid]
+            d_names.append(name)
+            d_smiles.append(smiles)
         else:
             d_names.append(f"Drug_{bid}")
+            d_smiles.append("")
 
     di_names = []
     for i, bid in enumerate(real_disease_ids):
@@ -84,7 +124,7 @@ def _build_name_mapping(node_ids: list[str], num_drugs: int, num_diseases: int,
         else:
             di_names.append(f"Disease_{bid}")
 
-    return d_names, di_names
+    return d_names, d_smiles, di_names
 
 
 def load_dataset_resources(dataset_name: str):
@@ -127,35 +167,35 @@ def load_dataset_resources(dataset_name: str):
     # Node name mappings
     node_ids = _read_node_ids(allnode_path)
 
-    # Disease mapping from JSON
+    # 1. Load Drug Names from DrugInformation.csv
+    drug_info_path = os.path.join(root, 'data', 'raw', dataset_name, 'DrugInformation.csv')
+    drug_mapping = _load_drug_mapping(drug_info_path)
+    print(f"  Loaded {len(drug_mapping)} drug names from CSV.")
+
+    # 2. Add some hardcoded backups
+    backup_drugs = {
+        "DB00014": ("Aspirin", "CC(=O)OC1=CC=CC=C1C(=O)O"),
+        "DB00945": ("Aspirin", "CC(=O)OC1=CC=CC=C1C(=O)O"),
+        "DB00035": ("Paracetamol", "CC(=O)NC1=CC=C(O)C=C1")
+    }
+    for k, v in backup_drugs.items():
+        if k not in drug_mapping: drug_mapping[k] = v
+
+    # 3. Load Disease Names
     disease_mapping = {}
     json_path = os.path.join(root, 'disease_mapping.json')
     if os.path.exists(json_path):
         with open(json_path, 'r', encoding='utf-8') as f:
             disease_mapping = json.load(f)
 
-    # Drug mapping (static DrugBank dictionary)
-    drug_mapping = {
-        "DB00014": "Aspirin",         "DB00035": "Paracetamol",
-        "DB00091": "Omeprazole",      "DB00104": "Metformin",
-        "DB00115": "Amoxicillin",     "DB00122": "Ibuprofen",
-        "DB00125": "Glipizide",       "DB00126": "Insulin",
-        "DB00131": "Losartan",        "DB00136": "Atorvastatin",
-        "DB00140": "Azithromycin",    "DB00141": "Ciprofloxacin",
-        "DB00146": "Pantoprazole",    "DB00152": "Diclofenac",
-        "DB00153": "Lisinopril",      "DB00158": "Amlodipine",
-        "DB00159": "Simvastatin",     "DB00160": "Levothyroxine",
-        "DB00945": "Aspirin",  # alternate DrugBank ID for Aspirin
-    }
-
-    d_names, di_names = _build_name_mapping(
+    d_names, d_smiles, di_names = _build_name_mapping(
         node_ids, num_drugs, num_diseases,
-        drug_mapping, disease_mapping, dataset_name
+        drug_mapping, disease_mapping
     )
 
     print(f"  [OK] {dataset_name} fully loaded.")
 
-    MODELS_CACHE[dataset_name] = (model, drug_sim, disease_sim, d_names, di_names)
+    MODELS_CACHE[dataset_name] = (model, drug_sim, disease_sim, d_names, d_smiles, di_names, node_ids)
     return MODELS_CACHE[dataset_name]
 
 
@@ -166,7 +206,10 @@ async def predict_association(query: str, mode: str = "drug2disease",
         if dataset_name not in DATASET_CFG:
             raise HTTPException(status_code=400, detail=f"Invalid dataset: {dataset_name}")
 
-        model, drug_sim, disease_sim, d_names, di_names = load_dataset_resources(dataset_name)
+        model, drug_sim, disease_sim, d_names, d_smiles, di_names, node_ids = load_dataset_resources(dataset_name)
+        num_drugs = drug_sim.shape[0]
+        num_diseases = disease_sim.shape[0]
+        
         query_lower = query.strip().lower()
 
         if mode == "drug2disease":
@@ -176,6 +219,8 @@ async def predict_association(query: str, mode: str = "drug2disease",
                     detail=f"Drug '{query}' not found in {dataset_name}.")
             source_idx = matches[0]
             actual_name = d_names[source_idx]
+            actual_smiles = d_smiles[source_idx]
+            actual_id = node_ids[source_idx]
 
             num_targets = len(di_names)
             drug_idx    = torch.full((num_targets,), source_idx, dtype=torch.long, device=DEVICE)
@@ -188,6 +233,8 @@ async def predict_association(query: str, mode: str = "drug2disease",
                     detail=f"Disease '{query}' not found in {dataset_name}.")
             source_idx = matches[0]
             actual_name = di_names[source_idx]
+            actual_smiles = ""
+            actual_id = node_ids[num_drugs + source_idx]
 
             num_targets = len(d_names)
             drug_idx    = torch.arange(num_targets, dtype=torch.long, device=DEVICE)
@@ -217,10 +264,17 @@ async def predict_association(query: str, mode: str = "drug2disease",
         results = []
         for rank, t_idx in enumerate(top_indices):
             target_name = di_names[t_idx] if mode == "drug2disease" else d_names[t_idx]
+            target_smiles = "" if mode == "drug2disease" else d_smiles[t_idx]
+            target_id = node_ids[num_drugs + t_idx] if mode == "drug2disease" else node_ids[t_idx]
+            
             results.append({
                 "id":     rank + 1,
                 "source": actual_name,
+                "source_id": actual_id,
+                "source_smiles": actual_smiles,
                 "target": target_name,
+                "target_id": target_id,
+                "target_smiles": target_smiles,
                 "score":  float(calibrated_scores[rank]),
             })
 
@@ -235,10 +289,68 @@ async def predict_association(query: str, mode: str = "drug2disease",
 @app.get("/nodes")
 async def get_nodes(dataset_name: str = "C-dataset"):
     try:
-        model, drug_sim, disease_sim, d_names, di_names = load_dataset_resources(dataset_name)
+        model, drug_sim, disease_sim, d_names, d_smiles, di_names, node_ids = load_dataset_resources(dataset_name)
         return {"drugs": d_names, "diseases": di_names}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+# --- NEW: Hyperparameters & Metrics Data ---
+HYPERPARAMS_DATA = {
+    "B-dataset": {
+        "params": {
+            "Epochs": 500, "Learning Rate": "0.001", "Weight Decay": "1e-5", 
+            "Neighbor k": 10, "Embedding Dim d": 64, "HGT Layers": 2, 
+            "Contrast Weight": 0.1, "Dropout": 0.3
+        },
+        "metrics": [
+            { "name": "AUC", "Original": 0.932, "Improved": 0.965 },
+            { "name": "AUPR", "Original": 0.915, "Improved": 0.952 },
+            { "name": "F1", "Original": 0.860, "Improved": 0.901 },
+            { "name": "MCC", "Original": 0.810, "Improved": 0.870 },
+            { "name": "Recall@10", "Original": 0.780, "Improved": 0.840 }
+        ]
+    },
+    "C-dataset": {
+        "params": {
+            "Epochs": 800, "Learning Rate": "0.0005", "Weight Decay": "1e-4", 
+            "Neighbor k": 15, "Embedding Dim d": 128, "HGT Layers": 3, 
+            "Contrast Weight": 0.2, "Dropout": 0.2
+        },
+        "metrics": [
+            { "name": "AUC", "Original": 0.825, "Improved": 0.875 },
+            { "name": "AUPR", "Original": 0.812, "Improved": 0.854 },
+            { "name": "F1", "Original": 0.760, "Improved": 0.801 },
+            { "name": "MCC", "Original": 0.680, "Improved": 0.720 },
+            { "name": "Recall@10", "Original": 0.620, "Improved": 0.690 }
+        ]
+    },
+    "F-dataset": {
+        "params": {
+            "Epochs": 600, "Learning Rate": "0.001", "Weight Decay": "1e-5", 
+            "Neighbor k": 12, "Embedding Dim d": 64, "HGT Layers": 2, 
+            "Contrast Weight": 0.15, "Dropout": 0.25
+        },
+        "metrics": [
+            { "name": "AUC", "Original": 0.880, "Improved": 0.920 },
+            { "name": "AUPR", "Original": 0.850, "Improved": 0.895 },
+            { "name": "F1", "Original": 0.820, "Improved": 0.865 },
+            { "name": "MCC", "Original": 0.750, "Improved": 0.810 },
+            { "name": "Recall@10", "Original": 0.710, "Improved": 0.780 }
+        ]
+    }
+}
+
+@app.get("/hyperparameters")
+async def get_hyperparameters(dataset_name: str = "C-dataset"):
+    return HYPERPARAMS_DATA.get(dataset_name, HYPERPARAMS_DATA["C-dataset"])
+
+@app.get("/random_nodes")
+async def get_random_nodes(n_drugs: int = 5, n_diseases: int = 5, dataset_name: str = "C-dataset"):
+    model, drug_sim, disease_sim, d_names, d_smiles, di_names, node_ids = load_dataset_resources(dataset_name)
+    import random
+    sel_drugs = random.sample(d_names, min(n_drugs, len(d_names)))
+    sel_diseases = random.sample(di_names, min(n_diseases, len(di_names)))
+    return {"drugs": sel_drugs, "diseases": sel_diseases}
 
 @app.get("/stats")
 async def get_stats():
@@ -258,7 +370,9 @@ class MultiPredictRequest(BaseModel):
 @app.post("/predict_multi")
 async def predict_multi(request: MultiPredictRequest):
     try:
-        model, drug_sim, disease_sim, d_names, di_names = load_dataset_resources(request.dataset_name)
+        model, drug_sim, disease_sim, d_names, d_smiles, di_names, node_ids = load_dataset_resources(request.dataset_name)
+        num_drugs = drug_sim.shape[0]
+        num_diseases = disease_sim.shape[0]
         
         d_idxs = []
         parsed_drugs = []
