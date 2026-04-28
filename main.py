@@ -248,18 +248,8 @@ async def predict_association(query: str, mode: str = "drug2disease",
         top_indices = np.argsort(probs_np)[::-1][:top_k]
         top_raw_scores = probs_np[top_indices]
 
-        # --- Z-Score Mathematical Calibration ---
-        # BPR Loss produces very tight score clustering (e.g. 0.4716, 0.4714).
-        # To make them distinct and high for the UI without fabricating data,
-        # we calculate local Z-scores and apply a shifted Sigmoid mapping.
-        if len(top_raw_scores) > 1:
-            mean_val = np.mean(top_raw_scores)
-            std_val  = np.std(top_raw_scores) + 1e-8
-            z_scores = (top_raw_scores - mean_val) / std_val
-            # Scale variance and shift average to ~80% (Z=1.4)
-            calibrated_scores = 1 / (1 + np.exp(-(z_scores * 1.2 + 1.8)))
-        else:
-            calibrated_scores = [0.95]
+        # TRUNG THỰC SỐ LIỆU: Trả đúng raw score từ mô hình, tuyệt đối không Z-score calibration!
+        calibrated_scores = top_raw_scores
 
         results = []
         for rank, t_idx in enumerate(top_indices):
@@ -294,55 +284,94 @@ async def get_nodes(dataset_name: str = "C-dataset"):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# --- NEW: Hyperparameters & Metrics Data ---
-HYPERPARAMS_DATA = {
-    "B-dataset": {
-        "params": {
-            "Epochs": 500, "Learning Rate": "0.001", "Weight Decay": "1e-5", 
-            "Neighbor k": 10, "Embedding Dim d": 64, "HGT Layers": 2, 
-            "Contrast Weight": 0.1, "Dropout": 0.3
-        },
-        "metrics": [
-            { "name": "AUC", "Original": 0.932, "Improved": 0.965 },
-            { "name": "AUPR", "Original": 0.915, "Improved": 0.952 },
-            { "name": "F1", "Original": 0.860, "Improved": 0.901 },
-            { "name": "MCC", "Original": 0.810, "Improved": 0.870 },
-            { "name": "Recall@10", "Original": 0.780, "Improved": 0.840 }
-        ]
-    },
-    "C-dataset": {
-        "params": {
-            "Epochs": 800, "Learning Rate": "0.0005", "Weight Decay": "1e-4", 
-            "Neighbor k": 15, "Embedding Dim d": 128, "HGT Layers": 3, 
-            "Contrast Weight": 0.2, "Dropout": 0.2
-        },
-        "metrics": [
-            { "name": "AUC", "Original": 0.825, "Improved": 0.875 },
-            { "name": "AUPR", "Original": 0.812, "Improved": 0.854 },
-            { "name": "F1", "Original": 0.760, "Improved": 0.801 },
-            { "name": "MCC", "Original": 0.680, "Improved": 0.720 },
-            { "name": "Recall@10", "Original": 0.620, "Improved": 0.690 }
-        ]
-    },
-    "F-dataset": {
-        "params": {
-            "Epochs": 600, "Learning Rate": "0.001", "Weight Decay": "1e-5", 
-            "Neighbor k": 12, "Embedding Dim d": 64, "HGT Layers": 2, 
-            "Contrast Weight": 0.15, "Dropout": 0.25
-        },
-        "metrics": [
-            { "name": "AUC", "Original": 0.880, "Improved": 0.920 },
-            { "name": "AUPR", "Original": 0.850, "Improved": 0.895 },
-            { "name": "F1", "Original": 0.820, "Improved": 0.865 },
-            { "name": "MCC", "Original": 0.750, "Improved": 0.810 },
-            { "name": "Recall@10", "Original": 0.710, "Improved": 0.780 }
-        ]
-    }
-}
-
 @app.get("/hyperparameters")
 async def get_hyperparameters(dataset_name: str = "C-dataset"):
-    return HYPERPARAMS_DATA.get(dataset_name, HYPERPARAMS_DATA["C-dataset"])
+    # Giữ lại endpoint cũ cho tương thích nhưng KHÔNG dùng hardcode nữa
+    # Dữ liệu sẽ được fetch qua /stats_detailed/{dataset_name}
+    return {}
+
+@app.get("/stats_detailed/{dataset_name}")
+async def get_stats_detailed(dataset_name: str):
+    """
+    Đọc dữ liệu THỰC TẾ từ các file CSV của quá trình train.
+    Tuyệt đối KHÔNG DÙNG HARDCODE.
+    """
+    try:
+        import pandas as pd
+        import os
+        from config import config
+        
+        root = config.root_dir
+        # Đường dẫn file CSV thực tế
+        improved_csv_path = os.path.join(root, 'results', 'tables', f'10_fold_results_{dataset_name}.csv')
+        # SỬA THEO YÊU CẦU: Lấy data baseline từ kết quả train gốc trong result_train
+        baseline_csv_path = os.path.join(root, 'results', 'result_train', dataset_name, 'AMNTDDA', f'{dataset_name[0]}-data-train.csv')
+
+        improved_metrics = {}
+        if os.path.exists(improved_csv_path):
+            df_imp = pd.read_csv(improved_csv_path)
+            # Lấy dòng Average / Mean
+            mean_row = df_imp[df_imp.iloc[:, 0].astype(str).str.contains('Average|Mean', case=False, na=False)]
+            if not mean_row.empty:
+                for col in df_imp.columns:
+                    if col not in ['Metric', 'Fold/Statistics', 'Fold']:
+                        try:
+                            improved_metrics[col] = float(mean_row[col].values[0])
+                        except ValueError:
+                            pass
+                            
+        baseline_metrics = {}
+        if os.path.exists(baseline_csv_path):
+            df_base = pd.read_csv(baseline_csv_path)
+            # Lấy dòng Average / Mean
+            mean_row_b = df_base[df_base.iloc[:, 0].astype(str).str.contains('Average|Mean', case=False, na=False)]
+            if not mean_row_b.empty:
+                for col in df_base.columns:
+                    if col not in ['Metric', 'Fold/Statistics', 'Fold']:
+                        try:
+                            baseline_metrics[col] = float(mean_row_b[col].values[0])
+                        except ValueError:
+                            pass
+                            
+        # Format dữ liệu cho UI Recharts
+        comparison_metrics = [
+            {"metric": "AUC", "Original": baseline_metrics.get("AUC", 0), "Improved": improved_metrics.get("AUC", 0)},
+            {"metric": "AUPR", "Original": baseline_metrics.get("AUPR", 0), "Improved": improved_metrics.get("AUPR", 0)},
+            {"metric": "F1", "Original": baseline_metrics.get("F1-score", 0), "Improved": improved_metrics.get("F1-score", 0)},
+            {"metric": "MCC", "Original": baseline_metrics.get("MCC", 0), "Improved": improved_metrics.get("MCC", 0)},
+        ]
+        
+        hyperparams_metrics = [
+            {"name": "AUC", "Original": baseline_metrics.get("AUC", 0), "Improved": improved_metrics.get("AUC", 0)},
+            {"name": "AUPR", "Original": baseline_metrics.get("AUPR", 0), "Improved": improved_metrics.get("AUPR", 0)},
+            {"name": "F1", "Original": baseline_metrics.get("F1-score", 0), "Improved": improved_metrics.get("F1-score", 0)},
+            {"name": "MCC", "Original": baseline_metrics.get("MCC", 0), "Improved": improved_metrics.get("MCC", 0)},
+            {"name": "Recall@10", "Original": 0, "Improved": improved_metrics.get("Recall@10", 0)}
+        ]
+        
+        params = {
+            "Epochs": getattr(config, 'epochs', 'N/A'), 
+            "Learning Rate": getattr(config, 'learning_rate', 'N/A'), 
+            "Weight Decay": getattr(config, 'weight_decay', 'N/A'), 
+            "Hidden Dim": getattr(config, 'hidden_dim', 'N/A'), 
+            "GNN Type": getattr(config, 'gnn_type', 'N/A'), 
+            "Contrast Weight": getattr(config, 'contrast_weight', 'N/A'), 
+            "Temperature": getattr(config, 'temperature', 'N/A')
+        }
+        
+        has_data = os.path.exists(improved_csv_path) or os.path.exists(baseline_csv_path)
+        
+        return {
+            "dataset": dataset_name,
+            "has_data": has_data,
+            "comparison": comparison_metrics,
+            "hyper_metrics": hyperparams_metrics,
+            "params": params,
+            "improved_raw": improved_metrics
+        }
+    except Exception as e:
+        import traceback; traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/random_nodes")
 async def get_random_nodes(n_drugs: int = 5, n_diseases: int = 5, dataset_name: str = "C-dataset"):
@@ -404,18 +433,9 @@ async def predict_multi(request: MultiPredictRequest):
                     "score": prob
                 })
                 
-        # --- Z-Score Global Calibration ---
-        if len(results) > 1:
-            raw_scores = np.array([r["score"] for r in results])
-            mean_val = np.mean(raw_scores)
-            std_val  = np.std(raw_scores) + 1e-8
-            z_scores = (raw_scores - mean_val) / std_val
-            calibrated_scores = 1 / (1 + np.exp(-(z_scores * 1.2 + 1.8)))
-            
-            for i, r in enumerate(results):
-                r["score"] = float(calibrated_scores[i])
-        elif len(results) == 1:
-            results[0]["score"] = 0.95
+        # TRUNG THỰC SỐ LIỆU: Không sử dụng Z-score giả mạo xác suất
+        # Giữ nguyên score nguyên bản do model nhả ra
+        pass
                     
         # Filter threshold based on calibrated scores
         results = [r for r in results if r["score"] >= request.threshold]

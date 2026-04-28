@@ -11,25 +11,8 @@ function cn(...inputs) {
   return twMerge(clsx(inputs));
 }
 
-// PERFORMANCE MOCK DATA
-const performanceDataB = [
-  { metric: 'AUC', Original: 0.932, Improved: 0.965 },
-  { metric: 'AUPR', Original: 0.915, Improved: 0.952 },
-  { metric: 'F1', Original: 0.860, Improved: 0.901 },
-  { metric: 'MCC', Original: 0.810, Improved: 0.870 },
-];
-const performanceDataC = [
-  { metric: 'AUC', Original: 0.825, Improved: 0.875 },
-  { metric: 'AUPR', Original: 0.812, Improved: 0.854 },
-  { metric: 'F1', Original: 0.760, Improved: 0.801 },
-  { metric: 'MCC', Original: 0.680, Improved: 0.720 },
-];
-const performanceDataF = [
-  { metric: 'AUC', Original: 0.880, Improved: 0.920 },
-  { metric: 'AUPR', Original: 0.850, Improved: 0.895 },
-  { metric: 'F1', Original: 0.820, Improved: 0.865 },
-  { metric: 'MCC', Original: 0.750, Improved: 0.810 },
-];
+// XÓA BỎ TOÀN BỘ MOCK DATA
+// Dữ liệu sẽ được gọi trực tiếp qua API /stats_detailed/{dataset_name}
 
 export default function UserPortal() {
   const [darkMode, setDarkMode] = useState(false);
@@ -40,6 +23,7 @@ export default function UserPortal() {
   const [datasetStats, setDatasetStats] = useState(null);
   const [nodeList, setNodeList] = useState({ drugs: [], diseases: [] });
   const [hyperData, setHyperData] = useState({ params: {}, metrics: [] });
+  const [statsDetailed, setStatsDetailed] = useState(null);
   const [isLoading, setIsLoading] = useState(false);
   const [results, setResults] = useState([]);
 
@@ -73,10 +57,13 @@ export default function UserPortal() {
   useEffect(() => {
     setIsLoading(true);
     const p1 = fetch(`http://127.0.0.1:8000/nodes?dataset_name=${datasetName}`).then(r => r.json());
-    const p2 = fetch(`http://127.0.0.1:8000/hyperparameters?dataset_name=${datasetName}`).then(r => r.json());
-    Promise.all([p1, p2]).then(([n, h]) => {
+    // GỌI DỮ LIỆU THẬT QUA ENDPOINT MỚI TẠO
+    const p2 = fetch(`http://127.0.0.1:8000/stats_detailed/${datasetName}`).then(r => r.json());
+    
+    Promise.all([p1, p2]).then(([n, s]) => {
       setNodeList(n || { drugs: [], diseases: [] });
-      setHyperData(h || { params: {}, metrics: [] });
+      setStatsDetailed(s);
+      setHyperData({ params: s?.params || {}, metrics: s?.hyper_metrics || [] });
     }).finally(() => setIsLoading(false));
   }, [datasetName]);
 
@@ -222,10 +209,14 @@ export default function UserPortal() {
                 ))}
               </div>
               <div className="bg-white dark:bg-slate-900 p-8 border dark:border-slate-800 rounded-[32px] shadow-sm">
-                 <h3 className="text-xl font-black mb-8 flex items-center gap-3"><BarChart2 className="text-teal-500"/> Hiệu suất mô hình AMNTDDA</h3>
-                 <div className="h-80 w-full">
-                    <ResponsiveContainer><BarChart data={datasetName==='B-dataset'?performanceDataB:datasetName==='C-dataset'?performanceDataC:performanceDataF}><CartesianGrid strokeDasharray="3 3" vertical={false} opacity={0.1}/><XAxis dataKey="metric"/><YAxis domain={[0.6, 1.0]} /><RechartsTooltip contentStyle={{borderRadius:'16px',border:'none',boxShadow:'0 10px 15px rgb(0 0 0 / 0.1)'}}/><Legend /><Bar dataKey="Improved" name="AMNTDDA (Ours)" fill="#0d9488" radius={[8, 8, 0, 0]} /><Bar dataKey="Original" name="Baseline" fill="#94a3b8" radius={[8, 8, 0, 0]} /></BarChart></ResponsiveContainer>
-                 </div>
+                 <h3 className="text-xl font-black mb-8 flex items-center gap-3"><BarChart2 className="text-teal-500"/> Hiệu suất mô hình AMNTDDA ({datasetName})</h3>
+                 {!statsDetailed?.has_data ? (
+                   <div className="flex items-center justify-center h-80 bg-slate-50 dark:bg-slate-800/50 rounded-2xl text-slate-400 font-bold uppercase tracking-widest text-sm">Chưa có kết quả train thực tế (CSV)</div>
+                 ) : (
+                   <div className="h-80 w-full">
+                      <ResponsiveContainer><BarChart data={statsDetailed?.comparison || []}><CartesianGrid strokeDasharray="3 3" vertical={false} opacity={0.1}/><XAxis dataKey="metric"/><YAxis domain={[0, 1.0]} /><RechartsTooltip contentStyle={{borderRadius:'16px',border:'none',boxShadow:'0 10px 15px rgb(0 0 0 / 0.1)'}}/><Legend /><Bar dataKey="Improved" name="AMNTDDA (Ours)" fill="#0d9488" radius={[8, 8, 0, 0]} /><Bar dataKey="Original" name="Baseline" fill="#94a3b8" radius={[8, 8, 0, 0]} /></BarChart></ResponsiveContainer>
+                   </div>
+                 )}
               </div>
             </div>
           )}
@@ -317,7 +308,11 @@ export default function UserPortal() {
                </div>
                <div className="bg-white dark:bg-slate-900 p-8 rounded-[32px] border dark:border-slate-800 shadow-sm">
                   <h3 className="text-xl font-black mb-8 text-rose-600 flex items-center gap-3"><CheckSquare size={22}/> Hiệu năng dự đoán</h3>
-                  <div className="h-[400px]"><ResponsiveContainer><BarChart data={hyperData.metrics||[]} layout="vertical" margin={{left:20}}><XAxis type="number" hide domain={[0,1]}/><YAxis dataKey="name" type="category" width={80} tick={{fontSize:10,fontWeight:'bold'}}/><RechartsTooltip /><Bar dataKey="Improved" name="AMNTDDA" fill="#0d9488" radius={[0,8,8,0]}/></BarChart></ResponsiveContainer></div>
+                  {!statsDetailed?.has_data ? (
+                    <div className="flex items-center justify-center h-[400px] bg-slate-50 dark:bg-slate-800/50 rounded-2xl text-slate-400 font-bold uppercase tracking-widest text-sm text-center px-4">Đang đợi kết quả từ<br/>results/tables/</div>
+                  ) : (
+                    <div className="h-[400px]"><ResponsiveContainer><BarChart data={hyperData.metrics||[]} layout="vertical" margin={{left:20}}><XAxis type="number" hide domain={[0,1]}/><YAxis dataKey="name" type="category" width={80} tick={{fontSize:10,fontWeight:'bold'}}/><RechartsTooltip /><Bar dataKey="Improved" name="AMNTDDA" fill="#0d9488" radius={[0,8,8,0]}/></BarChart></ResponsiveContainer></div>
+                  )}
                </div>
             </div>
           )}
@@ -325,8 +320,15 @@ export default function UserPortal() {
           {activeTab==='comparison' && (
             <div className="flex-1 p-8 overflow-y-auto text-center">
                <div className="bg-white dark:bg-slate-900 p-12 rounded-[48px] border dark:border-slate-800 shadow-sm max-w-5xl mx-auto">
-                  <h3 className="text-3xl font-black mb-12 text-teal-600 uppercase tracking-tighter">So sánh Baseline vs AMNTDDA Improved</h3>
-                  <div className="h-[500px]"><ResponsiveContainer><BarChart data={datasetName==='B-dataset'?performanceDataB:datasetName==='C-dataset'?performanceDataC:performanceDataF}><CartesianGrid strokeDasharray="3 3" vertical={false} opacity={0.1}/><XAxis dataKey="metric"/><YAxis domain={[0.6, 1.0]} /><RechartsTooltip contentStyle={{borderRadius:'24px'}}/><Legend /><Bar dataKey="Improved" name="AMNTDDA (Ours)" fill="#0d9488" radius={[12,12,0,0]}/><Bar dataKey="Original" name="Baseline Models" fill="#94a3b8" radius={[12,12,0,0]}/></BarChart></ResponsiveContainer></div>
+                  <h3 className="text-3xl font-black mb-12 text-teal-600 uppercase tracking-tighter">So sánh Baseline vs AMNTDDA Improved ({datasetName})</h3>
+                  {!statsDetailed?.has_data ? (
+                     <div className="flex flex-col items-center justify-center h-[500px] bg-slate-50 dark:bg-slate-800/50 rounded-[32px] text-slate-400 font-bold uppercase tracking-widest text-sm">
+                        <FileText size={48} className="mb-4 opacity-50" />
+                        Không tìm thấy file kết quả CSV của tập {datasetName}
+                     </div>
+                  ) : (
+                     <div className="h-[500px]"><ResponsiveContainer><BarChart data={statsDetailed?.comparison || []}><CartesianGrid strokeDasharray="3 3" vertical={false} opacity={0.1}/><XAxis dataKey="metric"/><YAxis domain={[0, 1.0]} /><RechartsTooltip contentStyle={{borderRadius:'24px'}}/><Legend /><Bar dataKey="Improved" name="AMNTDDA (Ours)" fill="#0d9488" radius={[12,12,0,0]}/><Bar dataKey="Original" name="Baseline Models" fill="#94a3b8" radius={[12,12,0,0]}/></BarChart></ResponsiveContainer></div>
+                  )}
                </div>
             </div>
           )}

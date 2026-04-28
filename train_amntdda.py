@@ -12,29 +12,15 @@ import argparse
 from config import config
 from preprocess import preprocess
 from models.amntdda_model import AMNTDDA, _DATASET_DIMS
-from models.contrastive_loss import GraphContrastiveLearning
-from utils.metrics import compute_metrics, find_best_threshold
-
-PROGRESS_FILE = 'training_progress_amntdda.json'
-
-def generate_bpr_k_negative_edges_strict(pos_edge_index, num_nodes_drug, num_nodes_disease, K=5):
-    device = pos_edge_index.device
-    num_pos = pos_edge_index.size(1)
-    
-    dense_mask = torch.ones((num_nodes_drug, num_nodes_disease), dtype=torch.float, device=device)
-    dense_mask[pos_edge_index[0], pos_edge_index[1]] = 0.0
-    
-    weights = dense_mask[pos_edge_index[0]]
-    neg_dst_matrix = torch.multinomial(weights, num_samples=K, replacement=False)
-    neg_dst = neg_dst_matrix.flatten()
-    neg_src = pos_edge_index[0].repeat_interleave(K)
-    
-    return torch.stack([neg_src, neg_dst], dim=0)
-
-def bpr_loss_k_fn(pos_scores, neg_scores, K):
-    neg_matrix = neg_scores.view(-1, K)
-    diff = pos_scores.unsqueeze(1) - neg_matrix
-    return -torch.mean(torch.nn.functional.logsigmoid(diff))
+def generate_negative_edges_baseline(pos_edge_index, num_nodes_drug, num_nodes_disease):
+    """
+    Sinh Negative Edges tỷ lệ 1:1 cơ bản cho Baseline (ngẫu nhiên).
+    """
+    num_neg_edges = pos_edge_index.size(1)
+    neg_src = torch.randint(0, num_nodes_drug, (num_neg_edges,))
+    neg_dst = torch.randint(0, num_nodes_disease, (num_neg_edges,))
+    neg_edge_index = torch.stack([neg_src, neg_dst], dim=0)
+    return neg_edge_index.to(pos_edge_index.device)
 
 def create_directories():
     os.makedirs(os.path.join(config.root_dir, 'logs'), exist_ok=True)
@@ -47,10 +33,10 @@ def train_fold(dataset_name, fold, epochs, device):
     config.dataset_name = dataset_name
     config.epochs = epochs
     
-    log_file_path = os.path.join(config.root_dir, 'logs', f'train_log_amntdda_{dataset_name}_fold{fold}.csv')
+    log_file_path = os.path.join(config.root_dir, 'logs', f'train_log_baseline_{dataset_name}_fold{fold}.csv')
     with open(log_file_path, mode='w', newline='') as f:
         writer = csv.writer(f)
-        writer.writerow(['epoch', 'lr', 'total_loss', 'task_loss', 'contrastive_loss', 'val_auc'])
+        writer.writerow(['epoch', 'lr', 'task_loss', 'val_auc'])
 
     data, drug_sim_emb, disease_sim_emb = preprocess()
     
@@ -87,8 +73,7 @@ def train_fold(dataset_name, fold, epochs, device):
     )
     
     bce_loss_fn = nn.BCEWithLogitsLoss()
-    gcl = GraphContrastiveLearning(temperature=config.temperature).to(device)
-
+    
     dd_edge_type = ('drug', 'treats', 'disease')
     pos_edge_index = train_data[dd_edge_type].edge_label_index
 
@@ -98,18 +83,17 @@ def train_fold(dataset_name, fold, epochs, device):
     best_val_auc = 0.0
     best_val_aupr = 0.0
     best_epoch = 0
-    best_val_threshold = 0.5
     patience_counter = 0
 
-    fold_checkpoint_name = f'temp_amntdda_{dataset_name}_fold{fold}.pt'
+    fold_checkpoint_name = f'temp_baseline_{dataset_name}_fold{fold}.pt'
     fold_checkpoint_path = os.path.join(config.root_dir, 'checkpoints', 'AMNTDDA', fold_checkpoint_name)
     
     for epoch in range(config.epochs):
         model.train()
         optimizer.zero_grad()
         
-        K_NEG = 5 
-        neg_edge_index = generate_bpr_k_negative_edges_strict(pos_edge_index, num_drugs, num_diseases, K=K_NEG).to(device)
+        # 1:1 Negative Sampling chuẩn của các model Baseline
+        neg_edge_index = generate_negative_edges_baseline(pos_edge_index, num_drugs, num_diseases)
         train_edge_index = torch.cat([pos_edge_index, neg_edge_index], dim=1)
         
         num_pos = pos_edge_index.size(1)
@@ -117,39 +101,15 @@ def train_fold(dataset_name, fold, epochs, device):
         labels = torch.cat([torch.ones(num_pos), torch.zeros(num_neg)]).to(device)
         
         # AMNTDDA Forward Pass
-        preds, (drug_emb, disease_emb) = model(
+        preds, _ = model(
             drug_sim, disease_sim,
             train_edge_index[0], train_edge_index[1],
-            use_transformers=False, # Match inference fix
-            return_embs=True
+            use_transformers=False,
+            return_embs=False
         )
         
-        # Task Loss (BCE)
-        task_loss_bce = nn.BCELoss()(preds, labels)
-        
-        # Task Loss (BPR)
-        pos_preds = preds[:num_pos]
-        neg_preds = preds[num_pos:]
-        pos_logits = torch.log(pos_preds.clamp(min=1e-8) / (1 - pos_preds.clamp(max=1-1e-8)))
-        neg_logits = torch.log(neg_preds.clamp(min=1e-8) / (1 - neg_preds.clamp(max=1-1e-8)))
-        
-        loss_bpr = bpr_loss_k_fn(pos_logits, neg_logits, K_NEG)
-        task_loss = task_loss_bce + (0.1 * loss_bpr)
-        
-        # Simple Contrastive Learning applying dropout to similarity matrices as augmentation
-        v1_drug_sim = torch.nn.functional.dropout(drug_sim, p=config.feat_mask_prob)
-        v1_disease_sim = torch.nn.functional.dropout(disease_sim, p=config.feat_mask_prob)
-        v2_drug_sim = torch.nn.functional.dropout(drug_sim, p=config.feat_mask_prob)
-        v2_disease_sim = torch.nn.functional.dropout(disease_sim, p=config.feat_mask_prob)
-        
-        _, (z1_drug, z1_disease) = model(v1_drug_sim, v1_disease_sim, train_edge_index[0], train_edge_index[1], use_transformers=False, return_embs=True)
-        _, (z2_drug, z2_disease) = model(v2_drug_sim, v2_disease_sim, train_edge_index[0], train_edge_index[1], use_transformers=False, return_embs=True)
-        
-        loss_cl_drug = gcl.info_nce_loss(z1_drug, z2_drug)
-        loss_cl_disease = gcl.info_nce_loss(z1_disease, z2_disease)
-        contrast_loss = loss_cl_drug + loss_cl_disease
-        
-        total_loss = task_loss + config.contrast_weight * contrast_loss
+        # Task Loss duy nhất là BCE tiêu chuẩn
+        total_loss = nn.BCELoss()(preds, labels)
         
         total_loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
@@ -162,8 +122,8 @@ def train_fold(dataset_name, fold, epochs, device):
             val_preds_prob = val_preds.cpu().numpy()
             v_labels_np = val_labels.cpu().numpy()
             
-            current_val_threshold = find_best_threshold(v_labels_np, val_preds_prob, metric='f1')
-            val_metrics = compute_metrics(v_labels_np, val_preds_prob, drug_ids=val_edge_index[0].cpu().numpy(), threshold=current_val_threshold)
+            # Không dùng best threshold, sử dụng mặc định 0.5 cho Baseline
+            val_metrics = compute_metrics(v_labels_np, val_preds_prob, drug_ids=val_edge_index[0].cpu().numpy(), threshold=0.5)
             current_val_auc = val_metrics["AUC"]
             current_val_aupr = val_metrics["AUPR"]
             
@@ -172,16 +132,15 @@ def train_fold(dataset_name, fold, epochs, device):
         
         with open(log_file_path, mode='a', newline='') as f:
             writer = csv.writer(f)
-            writer.writerow([epoch, current_lr, total_loss.item(), task_loss.item(), contrast_loss.item(), current_val_auc])
+            writer.writerow([epoch, current_lr, total_loss.item(), current_val_auc])
 
         if epoch % 10 == 0 or epoch == config.epochs - 1:
-            print(f"Fold {fold} | Ep {epoch:03d} | LR {current_lr:.5f} | Val AUC: {current_val_auc:.4f} | Val AUPR: {current_val_aupr:.4f} | Loss: {total_loss.item():.4f}")
+            print(f"Fold {fold} | Ep {epoch:03d} | LR {current_lr:.5f} | Val AUC: {current_val_auc:.4f} | Loss: {total_loss.item():.4f}")
 
         if current_val_auc > best_val_auc:
             best_val_auc = current_val_auc
             best_val_aupr = current_val_aupr
             best_epoch = epoch
-            best_val_threshold = current_val_threshold
             patience_counter = 0
             torch.save(model.state_dict(), fold_checkpoint_path)
         else:
@@ -205,7 +164,7 @@ def train_fold(dataset_name, fold, epochs, device):
         test_labels_np = test_labels.cpu().numpy()
         test_drug_ids_np = test_edge_index[0].cpu().numpy()
 
-        test_metrics_standard = compute_metrics(test_labels_np, test_preds_prob, drug_ids=test_drug_ids_np, threshold=best_val_threshold)
+        test_metrics_standard = compute_metrics(test_labels_np, test_preds_prob, drug_ids=test_drug_ids_np, threshold=0.5)
 
         pos_test_edges = test_edge_index[:, test_labels == 1]
         num_pos_test = pos_test_edges.size(1)
@@ -222,7 +181,7 @@ def train_fold(dataset_name, fold, epochs, device):
             ranking_labels_np = ranking_labels.cpu().numpy()
             ranking_drug_ids_np = ranking_edge_index[0].cpu().numpy()
 
-            ranking_metrics = compute_metrics(ranking_labels_np, ranking_preds_prob, drug_ids=ranking_drug_ids_np, threshold=best_val_threshold)
+            ranking_metrics = compute_metrics(ranking_labels_np, ranking_preds_prob, drug_ids=ranking_drug_ids_np, threshold=0.5)
         else:
             ranking_metrics = {"Recall@10": 0.0, "Recall@20": 0.0, "Recall@50": 0.0}
 
@@ -235,7 +194,7 @@ def train_fold(dataset_name, fold, epochs, device):
     for k, v in final_test_metrics.items():
         print(f"{k}: {v:.4f}")
         
-    return final_test_metrics, best_val_auc, best_epoch, best_val_threshold, fold_checkpoint_path
+    return final_test_metrics, best_val_auc, best_epoch, fold_checkpoint_path
 
 def main():
     parser = argparse.ArgumentParser(description='Train AMNTDDA on Multiple Datasets')
@@ -261,10 +220,10 @@ def main():
         best_dataset_val_auc = 0.0
         
         for fold in range(1, args.folds + 1):
-            metrics, fold_best_val_auc, best_epoch, best_val_threshold, fold_checkpoint_path = train_fold(ds, fold, config.epochs, device)
+            metrics, fold_best_val_auc, best_epoch, fold_checkpoint_path = train_fold(ds, fold, config.epochs, device)
             
             # Store metrics with best_epoch included
-            metrics_with_epoch = {"Best_Epoch": best_epoch, "Best_Threshold": best_val_threshold}
+            metrics_with_epoch = {"Best_Epoch": best_epoch}
             metrics_with_epoch.update(metrics)
             fold_metrics.append(metrics_with_epoch)
             
@@ -301,27 +260,24 @@ def main():
         for k, v in mean_metrics.items():
             print(f"{k}: {v:.4f} ± {std_metrics[k]:.4f}")
             
-        # Write format: Fold/Statistics, Best_Epoch, AUC, AUPR, ...
-        agg_path = os.path.join(config.root_dir, 'results', 'tables', f'10_fold_results_{ds}.csv')
+        # Thay đổi tên file CSV lưu kết quả để dễ phân biệt
+        agg_path = os.path.join(config.root_dir, 'results', 'tables', f'baseline_results_{ds}.csv')
         with open(agg_path, mode='w', newline='') as f:
             writer = csv.writer(f)
             header = ['Fold/Statistics'] + metric_names
             writer.writerow(header)
             
-            # Write individual folds
             for i, fm in enumerate(fold_metrics):
                 row = [f'Fold {i+1}'] + [f"{fm[k]:.4f}" for k in metric_names]
                 writer.writerow(row)
                 
-            # Write Mean
             mean_row = ['Mean'] + [f"{mean_metrics[k]:.4f}" for k in metric_names]
             writer.writerow(mean_row)
             
-            # Write Std
             std_row = ['Std'] + [f"{std_metrics[k]:.4f}" for k in metric_names]
             writer.writerow(std_row)
 
-    print("\nDONE! Pipeline AMNTDDA Training completely upgraded.")
+    print("\nDONE! Pipeline AMNTDDA BASELINE thuần túy hoàn tất.")
 
 if __name__ == '__main__':
     main()
