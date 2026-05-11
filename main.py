@@ -8,16 +8,41 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from config import config
 from models.amntdda_model import load_amntdda_model
+from database.database import init_db
+from routers import auth as auth_router
+from routers import admin as admin_router
+from routers import predictions as predictions_router
+from routers import data as data_router
 
-app = FastAPI()
+app = FastAPI(title="AMNTDDA API", version="2.0.0")
+
+# ─── Database startup ────────────────────────────────────────────────────────
+@app.on_event("startup")
+async def startup_event():
+    """Initialize SQLite DB and seed default users on first run."""
+    try:
+        init_db()
+    except Exception as e:
+        print(f"[WARN] DB init failed: {e}")
+
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["http://localhost:5173", "http://localhost:5174", "http://127.0.0.1:5173", "*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ─── Include routers ─────────────────────────────────────────────────────────
+app.include_router(auth_router.router)
+app.include_router(admin_router.router)
+app.include_router(predictions_router.router)
+app.include_router(data_router.router)
+
+@app.get("/health")
+def health_check():
+    return {"status": "ok"}
 
 MODELS_CACHE = {}
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -381,6 +406,10 @@ async def get_random_nodes(n_drugs: int = 5, n_diseases: int = 5, dataset_name: 
     sel_diseases = random.sample(di_names, min(n_diseases, len(di_names)))
     return {"drugs": sel_drugs, "diseases": sel_diseases}
 
+@app.get("/health")
+async def health_check():
+    return {"status": "ok"}
+
 @app.get("/stats")
 async def get_stats():
     return {
@@ -430,7 +459,10 @@ async def predict_multi(request: MultiPredictRequest):
                 results.append({
                     "source": real_d,
                     "target": real_di,
-                    "score": prob
+                    "score": prob,
+                    "source_id": node_ids[d],
+                    "source_smiles": d_smiles[d],
+                    "target_id": node_ids[num_drugs + di]
                 })
                 
         # TRUNG THỰC SỐ LIỆU: Không sử dụng Z-score giả mạo xác suất

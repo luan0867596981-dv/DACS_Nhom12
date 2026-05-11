@@ -18,3 +18,8 @@ wandb
 gdown
 fastapi
 uvicorn
+# ── Auth & Database ────────────────────────────────────────────
+sqlalchemy
+python-jose[cryptography]
+passlib[bcrypt]
+python-multipart

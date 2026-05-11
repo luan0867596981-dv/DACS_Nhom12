@@ -1,9 +1,12 @@
 import React from 'react';
+import { BrowserRouter } from 'react-router-dom';
 import UserPortal from './UserPortal';
 
 function App() {
   return (
-    <UserPortal />
+    <BrowserRouter>
+      <UserPortal />
+    </BrowserRouter>
   );
 }
 

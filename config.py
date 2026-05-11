@@ -1,4 +1,5 @@
 import os
+import secrets
 
 class Config:
     def __init__(self):
@@ -10,6 +11,17 @@ class Config:
         
         # Dataset
         self.dataset_name = 'F-dataset'
+        
+        # ── JWT / Auth Config ─────────────────────────────────────────────────
+        # Secret key: use env var JWT_SECRET if set, else generate a stable one
+        # In production, ALWAYS set JWT_SECRET as an environment variable!
+        self.jwt_secret = os.environ.get(
+            "JWT_SECRET",
+            "amntdda-dev-secret-2026-do-not-use-in-prod"
+        )
+        self.jwt_algorithm = "HS256"
+        self.jwt_expire_minutes = 60 * 24  # 24 hours
+
         
         # Model Hyperparameters
         self.gnn_type = 'SAGE'  # Options: 'SAGE', 'GAT'

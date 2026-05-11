@@ -1,24 +1,205 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { 
-  Search, Moon, Sun, Network, ArrowRight, Home as HomeIcon, CheckSquare, BarChart2, Settings, Layers, Shuffle, X, Database, Info, FileText, PlayCircle, Clipboard
+  Search, Moon, Sun, Network, ArrowRight, Home as HomeIcon, CheckSquare, BarChart2, Settings,
+  Layers, Shuffle, X, Database, Info, FileText, PlayCircle, Clipboard,
+  Zap, LogIn, LogOut, UserCircle, ShieldAlert, Users, Target, Activity
 } from 'lucide-react';
 import { clsx } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 import ForceGraph2D from 'react-force-graph-2d';
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, Legend, ResponsiveContainer, Cell } from 'recharts';
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, Legend, ResponsiveContainer } from 'recharts';
+import { AuthProvider, useAuth } from './contexts/AuthContext';
+import Login from './pages/Login';
+import Register from './pages/Register';
+import { Routes, Route, useNavigate, useLocation } from 'react-router-dom';
+import AdminDashboard from './pages/AdminDashboard';
+import DrugList from './pages/DrugList';
+import DiseaseList from './pages/DiseaseList';
+import ProteinList from './pages/ProteinList';
+import DatasetGraph from './pages/DatasetGraph';
+import UserManagement from './pages/UserManagement';
 
 function cn(...inputs) {
   return twMerge(clsx(inputs));
 }
 
+// ─── Hero Banner — Animated Gradient Full-Width ──────────────────────────────
+const heroBannerStyles = `
+  @keyframes gradientShift {
+    0%   { background-position: 0%   50%; }
+    50%  { background-position: 100% 50%; }
+    100% { background-position: 0%   50%; }
+  }
+  .hero-animated-bg {
+    background: linear-gradient(120deg, #0f4c3a, #065f46, #0d9488, #0891b2, #0c4a6e, #134e4a);
+    background-size: 300% 300%;
+    animation: gradientShift 8s ease infinite;
+  }
+  @keyframes pulse-ring {
+    0%, 100% { opacity: 0.15; transform: scale(1); }
+    50%       { opacity: 0.35; transform: scale(1.08); }
+  }
+  .hero-ring { animation: pulse-ring 4s ease-in-out infinite; }
+  .hero-ring-2 { animation: pulse-ring 4s ease-in-out infinite 1.5s; }
+`;
+
+function HeroBanner({ onNavigate, chartRef }) {
+  return (
+    <>
+      <style>{heroBannerStyles}</style>
+      <div
+        className="hero-animated-bg w-full rounded-[32px] shadow-2xl overflow-hidden"
+        style={{ minHeight: '280px', position: 'relative' }}
+      >
+        {/* Decorative blurred rings */}
+        <div className="hero-ring" style={{
+          position:'absolute', top:'-60px', right:'-60px',
+          width:'300px', height:'300px',
+          background:'rgba(20,184,166,0.3)', borderRadius:'50%', filter:'blur(60px)',
+        }}/>
+        <div className="hero-ring-2" style={{
+          position:'absolute', bottom:'-40px', left:'20%',
+          width:'200px', height:'200px',
+          background:'rgba(8,145,178,0.25)', borderRadius:'50%', filter:'blur(50px)',
+        }}/>
+        {/* Dot grid overlay */}
+        <div style={{
+          position:'absolute', inset:0,
+          backgroundImage:'radial-gradient(circle, rgba(255,255,255,0.06) 1px, transparent 1px)',
+          backgroundSize:'28px 28px',
+        }}/>
+
+        <div className="relative z-10 flex flex-col items-center justify-center text-center px-8 py-16">
+          {/* Badge */}
+          <div className="inline-flex items-center gap-2 px-4 py-2 bg-white/10 border border-white/20 rounded-full backdrop-blur-sm mb-6">
+            <span className="text-xs font-black text-teal-200 uppercase tracking-[0.2em]">
+              🧬 Attention Fusion · Graph Contrastive Learning
+            </span>
+          </div>
+
+          {/* Title */}
+          <h2 className="text-5xl font-black text-white leading-tight mb-4 drop-shadow-lg">
+            Hệ thống Dự đoán Thuốc–Bệnh
+            <br />
+            <span
+              style={{
+                background: 'linear-gradient(90deg, #5eead4, #67e8f9, #a5f3fc)',
+                WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent',
+              }}
+            >
+              thế hệ mới
+            </span>
+          </h2>
+
+          {/* Subtitle */}
+          <p className="text-base text-teal-100/80 max-w-2xl leading-relaxed mb-10 font-medium">
+            Ứng dụng GNN kết hợp Attention Fusion và Graph Contrastive Learning
+            để khám phá liên kết tiềm năng giữa thuốc và bệnh.
+          </p>
+
+          {/* 2 Buttons only */}
+          <div className="flex flex-wrap justify-center gap-4">
+            <button
+              onClick={() => onNavigate('predict')}
+              className="flex items-center gap-2 px-8 py-4 bg-teal-400 hover:bg-teal-300 text-slate-900 rounded-2xl font-black text-sm shadow-2xl shadow-teal-900/50 transition-all active:scale-95"
+            >
+              <Search size={18}/> 🔍 Bắt đầu dự đoán
+            </button>
+            <button
+              onClick={() => chartRef?.current?.scrollIntoView({ behavior: 'smooth' })}
+              className="flex items-center gap-2 px-8 py-4 bg-white/15 hover:bg-white/25 text-white rounded-2xl font-black text-sm border border-white/25 backdrop-blur-sm transition-all active:scale-95"
+            >
+              <BarChart2 size={18}/> 📊 Xem hiệu suất
+            </button>
+          </div>
+        </div>
+      </div>
+    </>
+  );
+}
+
+// ─── Stats Cards (7 cards) ────────────────────────────────────────────────────
+function StatsCards({ datasetStats, statsDetailed, systemOnline }) {
+  const [predCount, setPredCount] = useState(0);
+
+  useEffect(() => {
+    const v = parseInt(localStorage.getItem('prediction_count') || '0', 10);
+    setPredCount(isNaN(v) ? 0 : v);
+    const onStorage = () => {
+      const v2 = parseInt(localStorage.getItem('prediction_count') || '0', 10);
+      setPredCount(isNaN(v2) ? 0 : v2);
+    };
+    window.addEventListener('storage', onStorage);
+    return () => window.removeEventListener('storage', onStorage);
+  }, []);
+
+  const totalDrugs    = datasetStats ? Object.values(datasetStats).reduce((s, d) => s + (d.drugs    || 0), 0) : 1525;
+  const totalDiseases = datasetStats ? Object.values(datasetStats).reduce((s, d) => s + (d.diseases || 0), 0) : 1320;
+  const totalLinks    = datasetStats ? Object.values(datasetStats).reduce((s, d) => s + (d.ddas     || 0), 0) : 22881;
+  const proteinCount  = statsDetailed?.protein_count ?? 1392;  // fallback 1392
+
+  const cards = [
+    { label: 'Thuốc',            value: totalDrugs.toLocaleString(),    icon: '💊', color: 'text-teal-600',    bg: 'bg-teal-50 dark:bg-teal-900/20',    border: 'border-teal-100 dark:border-teal-800/40' },
+    { label: 'Bệnh',             value: totalDiseases.toLocaleString(),  icon: '🫀', color: 'text-rose-600',    bg: 'bg-rose-50 dark:bg-rose-900/20',    border: 'border-rose-100 dark:border-rose-800/40' },
+    { label: 'Protein',          value: proteinCount.toLocaleString(),   icon: '🧬', color: 'text-violet-600',  bg: 'bg-violet-50 dark:bg-violet-900/20', border: 'border-violet-100 dark:border-violet-800/40' },
+    { label: 'Liên kết đã biết', value: totalLinks.toLocaleString(),     icon: '🔗', color: 'text-indigo-600',  bg: 'bg-indigo-50 dark:bg-indigo-900/20', border: 'border-indigo-100 dark:border-indigo-800/40' },
+    { label: 'Lần dự đoán',      value: predCount.toLocaleString(),      icon: '⏱', color: 'text-amber-600',   bg: 'bg-amber-50 dark:bg-amber-900/20',   border: 'border-amber-100 dark:border-amber-800/40' },
+    { label: 'Datasets',         value: '3',                              icon: '🗂', color: 'text-sky-600',     bg: 'bg-sky-50 dark:bg-sky-900/20',       border: 'border-sky-100 dark:border-sky-800/40' },
+    {
+      label: 'Trạng thái',
+      value: systemOnline === null ? '…' : systemOnline ? 'Online' : 'Offline',
+      icon:  systemOnline === false ? '❌' : '✅',
+      color: systemOnline === false ? 'text-red-600' : 'text-emerald-600',
+      bg:    systemOnline === false ? 'bg-red-50 dark:bg-red-900/20'     : 'bg-emerald-50 dark:bg-emerald-900/20',
+      border:systemOnline === false ? 'border-red-100 dark:border-red-800/40' : 'border-emerald-100 dark:border-emerald-800/40',
+    },
+  ];
+
+  return (
+    <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-3">
+      {cards.map((c) => (
+        <div
+          key={c.label}
+          className={cn(
+            'flex flex-col items-center justify-center p-4 rounded-[24px] border shadow-sm transition-all hover:shadow-md hover:-translate-y-0.5',
+            c.bg, c.border
+          )}
+        >
+          <span className="text-2xl mb-1.5 leading-none">{c.icon}</span>
+          <span className={cn('text-lg font-black', c.color)}>{c.value}</span>
+          <span className="text-[9px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-widest mt-0.5 text-center leading-tight">
+            {c.label}
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+
 // XÓA BỎ TOÀN BỘ MOCK DATA
 // Dữ liệu sẽ được gọi trực tiếp qua API /stats_detailed/{dataset_name}
 
 export default function UserPortal() {
-  const [darkMode, setDarkMode] = useState(false);
-  const [activeTab, setActiveTab] = useState('home'); 
-  const [datasetName, setDatasetName] = useState('C-dataset');
+  return (
+    <AuthProvider>
+      <UserPortalInner />
+    </AuthProvider>
+  );
+}
+
+function UserPortalInner() {
+  const { user, logout } = useAuth();
+  const [authPage, setAuthPage] = useState(null); // null | 'login' | 'register'
   
+  const navigate = useNavigate();
+  const location = useLocation();
+
+  // ── All other state ──
+  const [darkMode, setDarkMode] = useState(false);
+  const [activeTab, setActiveTab] = useState('home');
+  const [datasetName, setDatasetName] = useState('C-dataset');
+
   // Data States
   const [datasetStats, setDatasetStats] = useState(null);
   const [nodeList, setNodeList] = useState({ drugs: [], diseases: [] });
@@ -26,6 +207,7 @@ export default function UserPortal() {
   const [statsDetailed, setStatsDetailed] = useState(null);
   const [isLoading, setIsLoading] = useState(false);
   const [results, setResults] = useState([]);
+  const [systemOnline, setSystemOnline] = useState(null);
 
   // Control States
   const [searchMode, setSearchMode] = useState('drug2disease');
@@ -43,15 +225,27 @@ export default function UserPortal() {
   const [hoverNode, setHoverNode] = useState(null);
   const [highlightNodes, setHighlightNodes] = useState(new Set());
   const [highlightLinks, setHighlightLinks] = useState(new Set());
-  
-  const fgPredict = useRef();
-  const fgRandom = useRef();
-  const fgMulti = useRef();
-  const imageCache = useRef(new Map());
+
+  const fgPredict   = useRef();
+  const fgRandom    = useRef();
+  const fgMulti     = useRef();
+  const imageCache  = useRef(new Map());
+  const chartSectionRef = useRef(null);  // for Hero "Xem hiệu suất" scroll
 
   // --- API FETCH ---
   useEffect(() => {
     fetch('http://127.0.0.1:8000/stats').then(r => r.json()).then(d => setDatasetStats(d)).catch(e => console.error(e));
+  }, []);
+
+  // Health check for system status card
+  useEffect(() => {
+    const check = () =>
+      fetch('http://127.0.0.1:8000/health')
+        .then(r => r.ok ? setSystemOnline(true) : setSystemOnline(false))
+        .catch(() => setSystemOnline(false));
+    check();
+    const id = setInterval(check, 30_000);
+    return () => clearInterval(id);
   }, []);
 
   useEffect(() => {
@@ -91,13 +285,22 @@ export default function UserPortal() {
     setGraphData({ nodes: Array.from(nodes.values()), links: resArr.map(r=>({ source: r.source, target: r.target, value: r.score, color: r.score>0.8?'#0d9488':'#f59e0b' })) });
   };
 
-  // --- HANDLERS ---
   const handlePredict = async () => {
     if (!searchQuery) return; setIsLoading(true); setSelectedNode(null); setResults([]);
     try {
       const r = await fetch(`http://127.0.0.1:8000/predict?query=${encodeURIComponent(searchQuery)}&mode=${searchMode}&top_k=${topK}&dataset_name=${datasetName}`);
       const d = await r.json(); setResults(d.results || []);
       if (d.results?.length) buildPredictGraph(d.results[0].source, d.results[0].source_id, d.results[0].source_smiles, d.results, searchMode==='drug2disease');
+      // Increment prediction counter in localStorage
+      const prev = parseInt(localStorage.getItem('prediction_count') || '0', 10);
+      localStorage.setItem('prediction_count', String(prev + 1));
+      // Log to backend (best-effort, don't block UI)
+      const authToken = localStorage.getItem('auth_token');
+      fetch('http://127.0.0.1:8000/predictions/log', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}) },
+        body: JSON.stringify({ drug: searchMode==='drug2disease'?searchQuery:null, disease: searchMode==='disease2drug'?searchQuery:null, dataset: datasetName, type: 'single', top_k: topK, result_count: d.results?.length || 0 }),
+      }).catch(() => {});
     } catch(e) { console.error(e); } finally { setIsLoading(false); }
   };
 
@@ -111,6 +314,12 @@ export default function UserPortal() {
         body: JSON.stringify({ drugs: nD.drugs, diseases: nD.diseases, dataset_name: datasetName, threshold: 0.4 })
       });
       const d = await pR.json(); setResults(d.results || []); buildMultiGraph(d.results || []);
+      const authToken = localStorage.getItem('auth_token');
+      fetch('http://127.0.0.1:8000/predictions/log', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}) },
+        body: JSON.stringify({ dataset: datasetName, type: 'random', result_count: d.results?.length || 0 }),
+      }).catch(() => {});
     } catch(e) { console.error(e); } finally { setIsLoading(false); }
   };
 
@@ -122,8 +331,15 @@ export default function UserPortal() {
         body: JSON.stringify({ drugs: multiDrugsStr.split(',').map(s=>s.trim()), diseases: multiDiseasesStr.split(',').map(s=>s.trim()), dataset_name: datasetName, threshold: multiThreshold })
       });
       const d = await pR.json(); setResults(d.results || []); buildMultiGraph(d.results || []);
+      const authToken = localStorage.getItem('auth_token');
+      fetch('http://127.0.0.1:8000/predictions/log', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}) },
+        body: JSON.stringify({ dataset: datasetName, type: 'many-to-many', result_count: d.results?.length || 0 }),
+      }).catch(() => {});
     } catch(e) { console.error(e); } finally { setIsLoading(false); }
   };
+
 
   // --- GRAPH RENDERING ---
   const handleHover = useCallback((n) => {
@@ -158,6 +374,9 @@ export default function UserPortal() {
     ctx.restore();
   }, [hoverNode, highlightNodes, darkMode]);
 
+  if (authPage === 'login') return <Login onLoginSuccess={() => setAuthPage(null)} onGoRegister={() => setAuthPage('register')} />;
+  if (authPage === 'register') return <Register onGoLogin={() => setAuthPage('login')} />;
+
   return (
     <div className="flex h-screen w-screen bg-slate-50 dark:bg-slate-950 font-sans text-slate-800 dark:text-slate-100 overflow-hidden">
       {/* SIDEBAR */}
@@ -166,19 +385,68 @@ export default function UserPortal() {
           <div className="w-10 h-10 bg-teal-600 rounded-xl flex items-center justify-center text-white shadow-lg"><Network size={24}/></div>
           <h1 className="font-black text-xl text-teal-700 dark:text-teal-400 uppercase tracking-tighter">AMNTDDA</h1>
         </div>
-        <nav className="flex-1 px-4 space-y-1">
-          <NavItem active={activeTab==='home'} icon={<HomeIcon size={18}/>} label="Trang Chủ" onClick={()=>setActiveTab('home')}/>
-          <NavItem active={activeTab==='predict'} icon={<Search size={18}/>} label="Dự Đoán Đơn" onClick={()=>setActiveTab('predict')}/>
-          <NavItem active={activeTab==='random'} icon={<Shuffle size={18}/>} label="Dự Đoán Ngẫu Nhiên" onClick={()=>setActiveTab('random')}/>
-          <NavItem active={activeTab==='multi'} icon={<Layers size={18}/>} label="Many-to-Many" onClick={()=>setActiveTab('multi')}/>
-          <NavItem active={activeTab==='hyperparams'} icon={<Settings size={18}/>} label="Siêu Tham Số" onClick={()=>setActiveTab('hyperparams')}/>
-          <NavItem active={activeTab==='comparison'} icon={<BarChart2 size={18}/>} label="So Sánh Mô Hình" onClick={()=>setActiveTab('comparison')}/>
+        <nav className="flex-1 px-4 space-y-1 overflow-y-auto">
+          <NavItem active={activeTab==='home' && location.pathname === '/'}       icon={<HomeIcon size={18}/>}  label="Trang Chủ"         onClick={()=>{setActiveTab('home'); navigate('/');}}/>
+          <NavItem active={activeTab==='predict' && location.pathname === '/'}    icon={<Search size={18}/>}    label="Dự Đoán Đơn"      onClick={()=>{setActiveTab('predict'); navigate('/');}}/>
+          <NavItem active={activeTab==='random' && location.pathname === '/'}     icon={<Shuffle size={18}/>}   label="Dự Đoán Ngẫu Nhiên" onClick={()=>{setActiveTab('random'); navigate('/');}}/>
+          <NavItem active={activeTab==='multi' && location.pathname === '/'}      icon={<Layers size={18}/>}    label="Many-to-Many"     onClick={()=>{setActiveTab('multi'); navigate('/');}}/>
+          <NavItem active={activeTab==='hyperparams' && location.pathname === '/'} icon={<Settings size={18}/>} label="Siêu Tham Số"      onClick={()=>{setActiveTab('hyperparams'); navigate('/');}}/>
+          <NavItem active={activeTab==='comparison' && location.pathname === '/'} icon={<BarChart2 size={18}/>} label="So Sánh Mô Hình"  onClick={()=>{setActiveTab('comparison'); navigate('/');}}/>
+          
+          <div className="pt-4 mt-2 border-t dark:border-slate-800">
+             <div className="px-4 mb-2 text-[10px] font-black uppercase text-slate-400 tracking-widest">Dữ liệu</div>
+             <NavItem active={location.pathname === '/thuoc'} icon={<Database size={18}/>} label="Thuốc" onClick={()=>{setActiveTab('thuoc'); navigate('/thuoc');}}/>
+             <NavItem active={location.pathname === '/benh'} icon={<Activity size={18}/>} label="Bệnh" onClick={()=>{setActiveTab('benh'); navigate('/benh');}}/>
+             <NavItem active={location.pathname === '/protein'} icon={<Target size={18}/>} label="Protein" onClick={()=>{setActiveTab('protein'); navigate('/protein');}}/>
+             <NavItem active={location.pathname === '/bieu-do-lien-ket'} icon={<Network size={18}/>} label="Biểu đồ liên kết" onClick={()=>{setActiveTab('graph'); navigate('/bieu-do-lien-ket');}}/>
+          </div>
+
+          {user?.role === 'admin' && (
+            <div className="pt-4 mt-2 border-t dark:border-slate-800">
+               <div className="px-4 mb-2 text-[10px] font-black uppercase text-slate-400 tracking-widest">Quản trị</div>
+               <NavItem active={location.pathname === '/admin'} icon={<ShieldAlert size={18}/>} label="Tổng quan Admin" onClick={()=>{setActiveTab('admin'); navigate('/admin');}}/>
+               <NavItem active={location.pathname === '/admin/users'} icon={<Users size={18}/>} label="Người dùng" onClick={()=>{setActiveTab('users'); navigate('/admin/users');}}/>
+            </div>
+          )}
         </nav>
-        <div className="p-4 border-t dark:border-slate-800">
+
+        {/* Sidebar bottom: dark mode + user section */}
+        <div className="p-4 border-t dark:border-slate-800 space-y-2">
+          {/* Dark mode toggle */}
           <button onClick={()=>setDarkMode(!darkMode)} className="w-full flex items-center gap-3 px-4 py-2 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-xl transition-all">
             {darkMode?<Sun size={18} className="text-amber-500"/>:<Moon size={18}/>}
             <span className="text-xs font-black uppercase">{darkMode?'Sáng':'Tối'}</span>
           </button>
+
+          {/* User section */}
+          {user ? (
+            <div className="flex items-center gap-3 px-2 py-2">
+              <div className="w-8 h-8 bg-teal-600 rounded-full flex items-center justify-center flex-shrink-0">
+                <UserCircle size={18} className="text-white"/>
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="text-xs font-black truncate text-slate-700 dark:text-slate-200">{user.username}</p>
+                {user.role === 'admin' && (
+                  <span className="text-[8px] font-black bg-red-500 text-white px-1.5 py-0.5 rounded-full uppercase">ADMIN</span>
+                )}
+              </div>
+              <button
+                onClick={() => logout()}
+                title="Đăng xuất"
+                className="p-1.5 text-slate-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg transition-all"
+              >
+                <LogOut size={16}/>
+              </button>
+            </div>
+          ) : (
+            <button
+              onClick={() => setAuthPage('login')}
+              className="w-full flex items-center gap-3 px-4 py-2 hover:bg-teal-50 dark:hover:bg-teal-900/20 text-teal-600 rounded-xl transition-all"
+            >
+              <LogIn size={18}/>
+              <span className="text-xs font-black uppercase">Đăng nhập</span>
+            </button>
+          )}
         </div>
       </aside>
 
@@ -195,8 +463,25 @@ export default function UserPortal() {
         </header>
 
         <div className="flex-1 overflow-hidden relative flex flex-col">
-          {activeTab==='home' && (
-            <div className="flex-1 overflow-y-auto p-8 space-y-8 animate-in fade-in">
+          <Routes>
+            <Route path="/thuoc" element={<DrugList onNavigate={(tab, data) => { setSearchMode(data.type); setSearchQuery(data.query); setActiveTab(tab); navigate('/'); }} />} />
+            <Route path="/benh" element={<DiseaseList onNavigate={(tab, data) => { setSearchMode(data.type); setSearchQuery(data.query); setActiveTab(tab); navigate('/'); }} />} />
+            <Route path="/protein" element={<ProteinList />} />
+            <Route path="/bieu-do-lien-ket" element={<DatasetGraph />} />
+            <Route path="/admin" element={<AdminDashboard />} />
+            <Route path="/admin/users" element={<UserManagement />} />
+            <Route path="*" element={
+              <>
+                {activeTab==='home' && (
+                  <div className="flex-1 overflow-y-auto p-8 space-y-8 animate-in fade-in">
+
+              {/* 1. Hero Banner — Animated gradient full-width */}
+              <HeroBanner onNavigate={setActiveTab} chartRef={chartSectionRef} />
+
+              {/* 2. Stats Cards — 7 cards */}
+              <StatsCards datasetStats={datasetStats} statsDetailed={statsDetailed} systemOnline={systemOnline} />
+
+              {/* 3. Full-width: Dataset Cards */}
               <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                 {['B-dataset', 'C-dataset', 'F-dataset'].map(ds => (
                   <div key={ds} className="p-8 bg-white dark:bg-slate-900 border dark:border-slate-800 rounded-[32px] shadow-sm hover:border-teal-500 transition-all">
@@ -208,18 +493,22 @@ export default function UserPortal() {
                   </div>
                 ))}
               </div>
-              <div className="bg-white dark:bg-slate-900 p-8 border dark:border-slate-800 rounded-[32px] shadow-sm">
-                 <h3 className="text-xl font-black mb-8 flex items-center gap-3"><BarChart2 className="text-teal-500"/> Hiệu suất mô hình AMNTDDA ({datasetName})</h3>
-                 {!statsDetailed?.has_data ? (
-                   <div className="flex items-center justify-center h-80 bg-slate-50 dark:bg-slate-800/50 rounded-2xl text-slate-400 font-bold uppercase tracking-widest text-sm">Chưa có kết quả train thực tế (CSV)</div>
-                 ) : (
-                   <div className="h-80 w-full">
-                      <ResponsiveContainer><BarChart data={statsDetailed?.comparison || []}><CartesianGrid strokeDasharray="3 3" vertical={false} opacity={0.1}/><XAxis dataKey="metric"/><YAxis domain={[0, 1.0]} /><RechartsTooltip contentStyle={{borderRadius:'16px',border:'none',boxShadow:'0 10px 15px rgb(0 0 0 / 0.1)'}}/><Legend /><Bar dataKey="Improved" name="AMNTDDA (Ours)" fill="#0d9488" radius={[8, 8, 0, 0]} /><Bar dataKey="Original" name="Baseline" fill="#94a3b8" radius={[8, 8, 0, 0]} /></BarChart></ResponsiveContainer>
-                   </div>
-                 )}
+
+              {/* 4. Performance Chart — full-width, with scroll anchor */}
+              <div ref={chartSectionRef} className="bg-white dark:bg-slate-900 p-8 border dark:border-slate-800 rounded-[32px] shadow-sm">
+                <h3 className="text-xl font-black mb-8 flex items-center gap-3"><BarChart2 className="text-teal-500"/> Hiệu suất mô hình AMNTDDA ({datasetName})</h3>
+                {!statsDetailed?.has_data ? (
+                  <div className="flex items-center justify-center h-64 bg-slate-50 dark:bg-slate-800/50 rounded-2xl text-slate-400 font-bold uppercase tracking-widest text-sm">Chưa có kết quả train thực tế (CSV)</div>
+                ) : (
+                  <div className="h-64 w-full">
+                    <ResponsiveContainer><BarChart data={statsDetailed?.comparison || []}><CartesianGrid strokeDasharray="3 3" vertical={false} opacity={0.1}/><XAxis dataKey="metric"/><YAxis domain={[0, 1.0]} /><RechartsTooltip contentStyle={{borderRadius:'16px',border:'none',boxShadow:'0 10px 15px rgb(0 0 0 / 0.1)'}}/><Legend /><Bar dataKey="Improved" name="AMNTDDA (Ours)" fill="#0d9488" radius={[8, 8, 0, 0]} /><Bar dataKey="Original" name="Baseline" fill="#94a3b8" radius={[8, 8, 0, 0]} /></BarChart></ResponsiveContainer>
+                  </div>
+                )}
               </div>
+
             </div>
           )}
+
 
           {activeTab==='predict' && (
             <div className="flex-1 flex w-full h-full overflow-hidden">
@@ -332,6 +621,9 @@ export default function UserPortal() {
                </div>
             </div>
           )}
+          </>
+            } />
+          </Routes>
         </div>
       </main>
     </div>
@@ -376,21 +668,25 @@ function DetailDrawer({ node, onClose }) {
   const getImgUrl = () => {
     const d_name = node.name.replace('Drug_','').trim();
     const urls = [];
+    
+    // 1. Simolecule using SMILES (Fastest, SVG vector, scales perfectly without resolution loss)
+    if (node.smiles) {
+       urls.push(`https://www.simolecule.com/cdkdepict/depict/bow/svg?smi=${encodeURIComponent(node.smiles)}&w=400&h=400&abbr=on&hdisp=bridgehead&zoom=1.6`);
+    }
+
+    // 2. PubChem (Very fast, minimal padding, large size)
+    urls.push(`https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/name/${encodeURIComponent(d_name)}/PNG?record_type=2d&image_size=large`);
+    
+    // 3. DrugBank SVG (Has a lot of built-in whitespace)
     if (node.realId && node.realId.startsWith('DB')) {
-       // Direct DrugBank SVG. Requires referrerPolicy="no-referrer" to bypass hotlink protection.
        urls.push(`https://go.drugbank.com/structures/small_molecule_drugs/${node.realId}.svg`);
     }
-    // NCI Cactus (Very reliable for name-to-structure resolution)
+
+    // 4. NCI Cactus (Reliable fallback)
     urls.push(`https://cactus.nci.nih.gov/chemical/structure/${encodeURIComponent(d_name)}/image`);
     
-    // PubChem (Might be rate-limited if IP was banned)
-    urls.push(`https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/name/${encodeURIComponent(d_name)}/PNG`);
-    
-    if (node.smiles) {
-       urls.push(`https://www.simolecule.com/cdkdepict/depict/bow/svg?smi=${encodeURIComponent(node.smiles)}&w=300&h=300`);
-    }
-    
-    urls.push(`https://placehold.co/300x300/e2e8f0/0d9488?text=${encodeURIComponent(d_name.substring(0, 12))}`);
+    // 5. Placeholder
+    urls.push(`https://placehold.co/400x400/f8fafc/0d9488?text=${encodeURIComponent(d_name.substring(0, 12))}`);
     
     return urls[Math.min(imgIndex, urls.length - 1)];
   };
@@ -409,13 +705,13 @@ function DetailDrawer({ node, onClose }) {
       <div className="flex-1 overflow-y-auto space-y-8 pr-2 custom-scrollbar">
         {node.group === 'drug' ? (
           <div className="space-y-4">
-             <div className="aspect-square bg-white rounded-[32px] border border-slate-100 p-6 shadow-inner flex items-center justify-center overflow-hidden group relative">
+             <div className="aspect-square bg-white rounded-[32px] border border-slate-100 p-2 shadow-inner flex items-center justify-center overflow-hidden group relative">
                 <img 
                   key={`${node.id}-${imgIndex}`}
                   src={getImgUrl()} 
                   alt="Structure" 
                   referrerPolicy="no-referrer"
-                  className="w-full h-full object-contain group-hover:scale-110 transition-transform duration-700" 
+                  className="w-full h-full object-contain scale-[1.7] group-hover:scale-[1.9] transition-transform duration-700 mix-blend-multiply" 
                   onError={() => { 
                     setImgIndex(prev => prev + 1);
                   }}
